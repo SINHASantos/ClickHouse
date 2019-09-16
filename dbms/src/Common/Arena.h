@@ -97,13 +97,22 @@ private:
         size_t size_after_grow = 0;
 
         if (head->size() < linear_growth_threshold)
-            size_after_grow = head->size() * growth_factor;
+        {
+            size_after_grow = std::max(min_next_size, head->size() * growth_factor);
+        }
         else
-            size_after_grow = linear_growth_threshold;
+        {
+            // allocContinue + linear growth give us quadratic behavior:
+            // we append the data by small amounts, and each time we create a
+            // new chunk that is only larger by this small amount, and copy the
+            // entire previous chunk into it. To at least reduce the multiplier,
+            // make sure the next chunk is bigger by at least the
+            // linear_growth_threshold, i.e., round the requested size up to it.
+            size_after_grow = ((min_next_size + linear_growth_threshold - 1)
+                    / linear_growth_threshold) * linear_growth_threshold;
+        }
 
-        if (size_after_grow < min_next_size)
-            size_after_grow = min_next_size;
-
+        assert(size_after_grow >= min_next_size);
         return roundUpToPageSize(size_after_grow);
     }
 
@@ -185,60 +194,90 @@ public:
       * If there is no space in chunk to expand current piece of memory - then copy all piece to new chunk and change value of 'begin'.
       * NOTE This method is usable only for latest allocation. For earlier allocations, see 'realloc' method.
       */
-    char * allocContinue(size_t size, char const *& begin)
+    char * allocContinue(size_t additional_bytes, char const *& begin)
     {
-        while (unlikely(head->pos + size > head->end))
+        if (!begin)
         {
-            char * prev_end = head->pos;
-            addChunk(size);
-
-            if (begin)
-                begin = insert(begin, prev_end - begin);
-            else
-                break;
+            // We are asked to start a new allocation.
+            char * result = alloc(additional_bytes);
+            begin = result;
+            return result;
         }
 
-        char * res = head->pos;
-        head->pos += size;
+        // We are asked to extend an existing allocation that starts at 'begin'
+        // with 'additional_bytes'. This method only works for extending the last
+        // allocation. For lack of original size, check a weaker condition --
+        // that 'begin' is at least in the current Chunk.
+        assert(begin >= head->begin && begin < head->end);
 
-        if (!begin)
-            begin = res;
+        if (unlikely(head->pos + additional_bytes > head->end))
+        {
+            // New size doesn't fit into this chunk, will copy to a new one.
+            //
+            // Note: this is a hackish implementation of realloc over Arenas
+            // that wastes a lot of memory -- quadratically so when we reach the
+            // linear allocation threshold. This deficiency is intentional, and
+            // should be solved not by complicating this hack, but by rethinking
+            // the approach to memory management for aggregate function states,
+            // so that we can provide a proper realloc().
+            const size_t existing_bytes = head->pos - begin;
+            const size_t new_bytes = existing_bytes + additional_bytes;
+            const char * old_range = begin;
 
-        ASAN_UNPOISON_MEMORY_REGION(res, size + pad_right);
-        return res;
+            char * new_range = alloc(new_bytes);
+            memcpy(new_range, old_range, existing_bytes);
+
+            begin = new_range;
+            return new_range + existing_bytes;
+        }
+
+        // The above 'if' checked that the new size fits into the last chunk, so
+        // just alloc the additional size.
+        return alloc(additional_bytes);
     }
 
-    char * alignedAllocContinue(size_t size, char const *& begin, size_t alignment)
+    char * alignedAllocContinue(size_t additional_bytes, char const *& begin, size_t alignment)
     {
-        char * res;
-
-        do
-        {
-            void * head_pos = head->pos;
-            size_t space = head->end - head->pos;
-
-            res = static_cast<char *>(std::align(alignment, size, head_pos, space));
-            if (res)
-            {
-                head->pos = static_cast<char *>(head_pos);
-                head->pos += size;
-                break;
-            }
-
-            char * prev_end = head->pos;
-            addChunk(size + alignment);
-
-            if (begin)
-                begin = alignedInsert(begin, prev_end - begin, alignment);
-            else
-                break;
-        } while (true);
-
         if (!begin)
-            begin = res;
+        {
+            // We are asked to start a new allocation.
+            char * result = alignedAlloc(additional_bytes, alignment);
+            begin = result;
+            return result;
+        }
 
-        ASAN_UNPOISON_MEMORY_REGION(res, size + pad_right);
-        return res;
+        // We are asked to extend an existing allocation that starts at 'begin'
+        // with 'additional_bytes'. This method only works for extending the last
+        // allocation. For lack of original size, check a weaker condition --
+        // that 'begin' is at least in the current Chunk.
+        assert(begin >= head->begin && begin < head->end);
+
+        if (unlikely(head->pos + additional_bytes > head->end))
+        {
+            // New size doesn't fit into this chunk, will copy to a new one.
+            //
+            // Note: this is a hackish implementation of realloc over Arenas
+            // that wastes a lot of memory -- quadratically so when we reach the
+            // linear allocation threshold. This deficiency is intentional, and
+            // should be solved not by complicating this hack, but by rethinking
+            // the approach to memory management for aggregate function states,
+            // so that we can provide a proper realloc().
+            const size_t existing_bytes = head->pos - begin;
+            const size_t new_bytes = existing_bytes + additional_bytes;
+            const char * old_range = begin;
+
+            char * new_range = alignedAlloc(new_bytes, alignment);
+            memcpy(new_range, old_range, existing_bytes);
+
+            begin = new_range;
+            return new_range + existing_bytes;
+        }
+
+        // The above 'if' checked that the new size fits into the last chunk, so
+        // just alloc the additional size.
+        // We don't care about alignment here, because it only applies to the
+        // start of the memory range.
+        return alloc(additional_bytes);
     }
 
     /// NOTE Old memory region is wasted.
