@@ -24,7 +24,13 @@ public:
         StorageReplicatedMergeTree & storage_,
         IExecutableTask::TaskResultCallback & task_result_callback_);
 
-    Priority getPriority() override { return priority; }
+    Priority getPriority() const override { return priority; }
+
+    void cancel() noexcept override
+    {
+        if (merge_task)
+            merge_task->cancel();
+    }
 
 protected:
     /// Both return false if we can't execute merge.

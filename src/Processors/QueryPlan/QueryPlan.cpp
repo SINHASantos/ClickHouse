@@ -18,7 +18,7 @@
 #include <Processors/QueryPlan/QueryPlanVisitor.h>
 
 #include <QueryPipeline/QueryPipelineBuilder.h>
-
+#include <Planner/Utils.h>
 
 namespace DB
 {
@@ -26,6 +26,20 @@ namespace DB
 namespace ErrorCodes
 {
     extern const int LOGICAL_ERROR;
+    extern const int NOT_FOUND_COLUMN_IN_BLOCK;
+}
+
+SettingsChanges ExplainPlanOptions::toSettingsChanges() const
+{
+    SettingsChanges changes;
+    changes.emplace_back("header", int(header));
+    changes.emplace_back("description", int(description));
+    changes.emplace_back("actions", int(actions));
+    changes.emplace_back("indexes", int(indexes));
+    changes.emplace_back("sorting", int(sorting));
+    changes.emplace_back("distributed", int(distributed));
+
+    return changes;
 }
 
 QueryPlan::QueryPlan() = default;
@@ -47,14 +61,14 @@ void QueryPlan::checkNotCompleted() const
 
 bool QueryPlan::isCompleted() const
 {
-    return isInitialized() && !root->step->hasOutputStream();
+    return isInitialized() && !root->step->hasOutputHeader();
 }
 
-const DataStream & QueryPlan::getCurrentDataStream() const
+const Header & QueryPlan::getCurrentHeader() const
 {
     checkInitialized();
     checkNotCompleted();
-    return root->step->getOutputStream();
+    return root->step->getOutputHeader();
 }
 
 void QueryPlan::unitePlans(QueryPlanStepPtr step, std::vector<std::unique_ptr<QueryPlan>> plans)
@@ -62,8 +76,8 @@ void QueryPlan::unitePlans(QueryPlanStepPtr step, std::vector<std::unique_ptr<Qu
     if (isInitialized())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot unite plans because current QueryPlan is already initialized");
 
-    const auto & inputs = step->getInputStreams();
-    size_t num_inputs = step->getInputStreams().size();
+    const auto & inputs = step->getInputHeaders();
+    size_t num_inputs = step->getInputHeaders().size();
     if (num_inputs != plans.size())
         throw Exception(
             ErrorCodes::LOGICAL_ERROR,
@@ -74,8 +88,8 @@ void QueryPlan::unitePlans(QueryPlanStepPtr step, std::vector<std::unique_ptr<Qu
 
     for (size_t i = 0; i < num_inputs; ++i)
     {
-        const auto & step_header = inputs[i].header;
-        const auto & plan_header = plans[i]->getCurrentDataStream().header;
+        const auto & step_header = inputs[i];
+        const auto & plan_header = plans[i]->getCurrentHeader();
         if (!blocksHaveEqualStructure(step_header, plan_header))
             throw Exception(
                 ErrorCodes::LOGICAL_ERROR,
@@ -106,7 +120,7 @@ void QueryPlan::addStep(QueryPlanStepPtr step)
 {
     checkNotCompleted();
 
-    size_t num_input_streams = step->getInputStreams().size();
+    size_t num_input_streams = step->getInputHeaders().size();
 
     if (num_input_streams == 0)
     {
@@ -129,8 +143,8 @@ void QueryPlan::addStep(QueryPlanStepPtr step)
                 "Cannot add step {} to QueryPlan because step has input, but QueryPlan is not initialized",
                 step->getName());
 
-        const auto & root_header = root->step->getOutputStream().header;
-        const auto & step_header = step->getInputStreams().front().header;
+        const auto & root_header = root->step->getOutputHeader();
+        const auto & step_header = step->getInputHeaders().front();
         if (!blocksHaveEqualStructure(root_header, step_header))
             throw Exception(
                 ErrorCodes::LOGICAL_ERROR,
@@ -168,7 +182,6 @@ QueryPipelineBuilderPtr QueryPlan::buildQueryPipeline(
 
     QueryPipelineBuilderPtr last_pipeline;
 
-
     std::stack<Frame> stack;
     stack.push(Frame{.node = root});
 
@@ -200,13 +213,15 @@ QueryPipelineBuilderPtr QueryPlan::buildQueryPipeline(
     last_pipeline->setProgressCallback(build_pipeline_settings.progress_callback);
     last_pipeline->setProcessListElement(build_pipeline_settings.process_list_element);
     last_pipeline->addResources(std::move(resources));
+    last_pipeline->setConcurrencyControl(getConcurrencyControl());
 
     return last_pipeline;
 }
 
-static void explainStep(const IQueryPlanStep & step, JSONBuilder::JSONMap & map, const QueryPlan::ExplainPlanOptions & options)
+static void explainStep(const IQueryPlanStep & step, JSONBuilder::JSONMap & map, const ExplainPlanOptions & options)
 {
     map.add("Node Type", step.getName());
+    map.add("Node Id", step.getUniqID());
 
     if (options.description)
     {
@@ -215,11 +230,11 @@ static void explainStep(const IQueryPlanStep & step, JSONBuilder::JSONMap & map,
             map.add("Description", description);
     }
 
-    if (options.header && step.hasOutputStream())
+    if (options.header && step.hasOutputHeader())
     {
         auto header_array = std::make_unique<JSONBuilder::JSONArray>();
 
-        for (const auto & output_column : step.getOutputStream().header)
+        for (const auto & output_column : step.getOutputHeader())
         {
             auto column_map = std::make_unique<JSONBuilder::JSONMap>();
             column_map->add("Name", output_column.name);
@@ -239,7 +254,7 @@ static void explainStep(const IQueryPlanStep & step, JSONBuilder::JSONMap & map,
         step.describeIndexes(map);
 }
 
-JSONBuilder::ItemPtr QueryPlan::explainPlan(const ExplainPlanOptions & options)
+JSONBuilder::ItemPtr QueryPlan::explainPlan(const ExplainPlanOptions & options) const
 {
     checkInitialized();
 
@@ -276,6 +291,14 @@ JSONBuilder::ItemPtr QueryPlan::explainPlan(const ExplainPlanOptions & options)
         }
         else
         {
+            auto child_plans = frame.node->step->getChildPlans();
+
+            if (!frame.children_array && !child_plans.empty())
+                frame.children_array = std::make_unique<JSONBuilder::JSONArray>();
+
+            for (const auto & child_plan : child_plans)
+                frame.children_array->add(child_plan->explainPlan(options));
+
             if (frame.children_array)
                 frame.node_map->add("Plans", std::move(frame.children_array));
 
@@ -291,9 +314,9 @@ JSONBuilder::ItemPtr QueryPlan::explainPlan(const ExplainPlanOptions & options)
 }
 
 static void explainStep(
-    const IQueryPlanStep & step,
+    IQueryPlanStep & step,
     IQueryPlanStep::FormatSettings & settings,
-    const QueryPlan::ExplainPlanOptions & options)
+    const ExplainPlanOptions & options)
 {
     std::string prefix(settings.offset, ' ');
     settings.out << prefix;
@@ -309,16 +332,16 @@ static void explainStep(
     {
         settings.out << prefix;
 
-        if (!step.hasOutputStream())
+        if (!step.hasOutputHeader())
             settings.out << "No header";
-        else if (!step.getOutputStream().header)
+        else if (!step.getOutputHeader())
             settings.out << "Empty header";
         else
         {
             settings.out << "Header: ";
             bool first = true;
 
-            for (const auto & elem : step.getOutputStream().header)
+            for (const auto & elem : step.getOutputHeader())
             {
                 if (!first)
                     settings.out << "\n" << prefix << "        ";
@@ -333,14 +356,10 @@ static void explainStep(
 
     if (options.sorting)
     {
-        if (step.hasOutputStream())
+        if (const auto & sort_description = step.getSortDescription(); !sort_description.empty())
         {
-            settings.out << prefix << "Sorting (" << step.getOutputStream().sort_scope << ")";
-            if (step.getOutputStream().sort_scope != DataStream::SortScope::None)
-            {
-                settings.out << ": ";
-                dumpSortDescription(step.getOutputStream().sort_description, settings.out);
-            }
+            settings.out << prefix << "Sorting: ";
+            dumpSortDescription(sort_description, settings.out);
             settings.out.write('\n');
         }
     }
@@ -350,18 +369,21 @@ static void explainStep(
 
     if (options.indexes)
         step.describeIndexes(settings);
+
+    if (options.distributed)
+        step.describeDistributedPlan(settings, options);
 }
 
-std::string debugExplainStep(const IQueryPlanStep & step)
+std::string debugExplainStep(IQueryPlanStep & step)
 {
     WriteBufferFromOwnString out;
+    ExplainPlanOptions options{.actions = true};
     IQueryPlanStep::FormatSettings settings{.out = out};
-    QueryPlan::ExplainPlanOptions options{.actions = true};
     explainStep(step, settings, options);
     return out.str();
 }
 
-void QueryPlan::explainPlan(WriteBuffer & buffer, const ExplainPlanOptions & options)
+void QueryPlan::explainPlan(WriteBuffer & buffer, const ExplainPlanOptions & options, size_t indent) const
 {
     checkInitialized();
 
@@ -383,7 +405,7 @@ void QueryPlan::explainPlan(WriteBuffer & buffer, const ExplainPlanOptions & opt
 
         if (!frame.is_description_printed)
         {
-            settings.offset = (stack.size() - 1) * settings.indent;
+            settings.offset = (indent + stack.size() - 1) * settings.indent;
             explainStep(*frame.node->step, settings, options);
             frame.is_description_printed = true;
         }
@@ -394,7 +416,14 @@ void QueryPlan::explainPlan(WriteBuffer & buffer, const ExplainPlanOptions & opt
             ++frame.next_child;
         }
         else
+        {
+            auto child_plans = frame.node->step->getChildPlans();
+
+            for (const auto & child_plan : child_plans)
+                child_plan->explainPlan(buffer, options, indent + stack.size());
+
             stack.pop();
+        }
     }
 }
 
@@ -408,7 +437,7 @@ static void explainPipelineStep(IQueryPlanStep & step, IQueryPlanStep::FormatSet
         settings.offset += settings.indent;
 }
 
-void QueryPlan::explainPipeline(WriteBuffer & buffer, const ExplainPipelineOptions & options)
+void QueryPlan::explainPipeline(WriteBuffer & buffer, const ExplainPipelineOptions & options) const
 {
     checkInitialized();
 
@@ -447,46 +476,30 @@ void QueryPlan::explainPipeline(WriteBuffer & buffer, const ExplainPipelineOptio
     }
 }
 
-static void updateDataStreams(QueryPlan::Node & root)
-{
-    class UpdateDataStreams : public QueryPlanVisitor<UpdateDataStreams, false>
-    {
-    public:
-        explicit UpdateDataStreams(QueryPlan::Node * root_) : QueryPlanVisitor<UpdateDataStreams, false>(root_) { }
-
-        static bool visitTopDownImpl(QueryPlan::Node * /*current_node*/, QueryPlan::Node * /*parent_node*/) { return true; }
-
-        static void visitBottomUpImpl(QueryPlan::Node * current_node, QueryPlan::Node * parent_node)
-        {
-            if (!parent_node || parent_node->children.size() != 1)
-                return;
-
-            if (!current_node->step->hasOutputStream())
-                return;
-
-            if (auto * parent_transform_step = dynamic_cast<ITransformingStep *>(parent_node->step.get()); parent_transform_step)
-                parent_transform_step->updateInputStream(current_node->step->getOutputStream());
-        }
-    };
-
-    UpdateDataStreams(&root).visit();
-}
-
 void QueryPlan::optimize(const QueryPlanOptimizationSettings & optimization_settings)
 {
-    /// optimization need to be applied before "mergeExpressions" optimization
-    /// it removes redundant sorting steps, but keep underlying expressions,
-    /// so "mergeExpressions" optimization handles them afterwards
-    if (optimization_settings.remove_redundant_sorting)
-        QueryPlanOptimizations::tryRemoveRedundantSorting(root);
+    try
+    {
+        /// optimization need to be applied before "mergeExpressions" optimization
+        /// it removes redundant sorting steps, but keep underlying expressions,
+        /// so "mergeExpressions" optimization handles them afterwards
+        if (optimization_settings.remove_redundant_sorting)
+            QueryPlanOptimizations::tryRemoveRedundantSorting(root);
 
-    QueryPlanOptimizations::optimizeTreeFirstPass(optimization_settings, *root, nodes);
-    QueryPlanOptimizations::optimizeTreeSecondPass(optimization_settings, *root, nodes);
-
-    updateDataStreams(*root);
+        QueryPlanOptimizations::optimizeTreeFirstPass(optimization_settings, *root, nodes);
+        QueryPlanOptimizations::optimizeTreeSecondPass(optimization_settings, *root, nodes);
+        if (optimization_settings.build_sets)
+            QueryPlanOptimizations::addStepsToBuildSets(*this, *root, nodes);
+    }
+    catch (Exception & e)
+    {
+        if (e.code() == ErrorCodes::NOT_FOUND_COLUMN_IN_BLOCK)
+            e.addMessage("while optimizing query plan:\n{}", dumpQueryPlan(*this));
+        throw;
+    }
 }
 
-void QueryPlan::explainEstimate(MutableColumns & columns)
+void QueryPlan::explainEstimate(MutableColumns & columns) const
 {
     checkInitialized();
 
@@ -497,10 +510,6 @@ void QueryPlan::explainEstimate(MutableColumns & columns)
         UInt64 parts = 0;
         UInt64 rows = 0;
         UInt64 marks = 0;
-
-        EstimateCounters(const std::string & database, const std::string & table) : database_name(database), table_name(table)
-        {
-        }
     };
 
     using CountersPtr = std::shared_ptr<EstimateCounters>;
@@ -541,9 +550,9 @@ void QueryPlan::explainEstimate(MutableColumns & columns)
     }
 }
 
-QueryPlan::Nodes QueryPlan::detachNodes(QueryPlan && plan)
+std::pair<QueryPlan::Nodes, QueryPlanResourceHolder> QueryPlan::detachNodesAndResources(QueryPlan && plan)
 {
-    return std::move(plan.nodes);
+    return {std::move(plan.nodes), std::move(plan.resources)};
 }
 
 }

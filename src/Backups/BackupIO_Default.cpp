@@ -4,17 +4,16 @@
 #include <IO/copyData.h>
 #include <IO/WriteBufferFromFileBase.h>
 #include <IO/ReadBufferFromFileBase.h>
-#include <Interpreters/Context.h>
 #include <Common/logger_useful.h>
 
 
 namespace DB
 {
 
-BackupReaderDefault::BackupReaderDefault(Poco::Logger * log_, const ContextPtr & context_)
+BackupReaderDefault::BackupReaderDefault(const ReadSettings & read_settings_, const WriteSettings & write_settings_, LoggerPtr log_)
     : log(log_)
-    , read_settings(context_->getBackupReadSettings())
-    , write_settings(context_->getWriteSettings())
+    , read_settings(read_settings_)
+    , write_settings(write_settings_)
     , write_buffer_size(DBMS_DEFAULT_BUFFER_SIZE)
 {
 }
@@ -37,10 +36,10 @@ void BackupReaderDefault::copyFileToDisk(const String & path_in_backup, size_t f
     write_buffer->finalize();
 }
 
-BackupWriterDefault::BackupWriterDefault(Poco::Logger * log_, const ContextPtr & context_)
+BackupWriterDefault::BackupWriterDefault(const ReadSettings & read_settings_, const WriteSettings & write_settings_, LoggerPtr log_)
     : log(log_)
-    , read_settings(context_->getBackupReadSettings())
-    , write_settings(context_->getWriteSettings())
+    , read_settings(read_settings_)
+    , write_settings(write_settings_)
     , write_buffer_size(DBMS_DEFAULT_BUFFER_SIZE)
 {
 }
@@ -86,10 +85,21 @@ void BackupWriterDefault::copyFileFromDisk(const String & path_in_backup, DiskPt
     {
         if (copy_encrypted)
             return src_disk->readEncryptedFile(src_path, settings);
-        else
-            return src_disk->readFile(src_path, settings);
+        return src_disk->readFile(src_path, settings);
     };
 
     copyDataToFile(path_in_backup, create_read_buffer, start_pos, length);
 }
+
+void BackupWriterDefault::removeFiles(const Strings & file_names)
+{
+    /// Derived classes can override removeFiles() to remove files faster (e.g. by using batch remove).
+    for (const auto & file_name : file_names)
+        removeFile(file_name);
+}
+
+void BackupWriterDefault::removeEmptyDirectories()
+{
+}
+
 }

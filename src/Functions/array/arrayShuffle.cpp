@@ -7,6 +7,7 @@
 #include <Functions/FunctionHelpers.h>
 #include <Functions/IFunction.h>
 #include <Common/assert_cast.h>
+#include <Common/iota.h>
 #include <Common/randomSeed.h>
 #include <Common/shuffle.h>
 #include <Common/typeid_cast.h>
@@ -15,6 +16,7 @@
 
 #include <algorithm>
 #include <numeric>
+
 
 namespace DB
 {
@@ -149,7 +151,7 @@ ColumnPtr FunctionArrayShuffleImpl<Traits>::executeGeneric(const ColumnArray & a
     size_t size = offsets.size();
     size_t nested_size = array.getData().size();
     IColumn::Permutation permutation(nested_size);
-    std::iota(std::begin(permutation), std::end(permutation), 0);
+    iota(permutation.data(), permutation.size(), IColumn::Permutation::value_type(0));
 
     ColumnArray::Offset current_offset = 0;
     for (size_t i = 0; i < size; ++i)
@@ -193,8 +195,8 @@ It is possible to override the seed to produce stable results:
                 {"random_seed", "SELECT arrayShuffle([1, 2, 3, 4])", ""},
                 {"explicit_seed", "SELECT arrayShuffle([1, 2, 3, 4], 41)", ""},
                 {"materialize", "SELECT arrayShuffle(materialize([1, 2, 3]), 42), arrayShuffle([1, 2, 3], 42) FROM numbers(10)", ""}},
-            .categories{"Array"}},
-        FunctionFactory::CaseInsensitive);
+            .category{"Arrays"}},
+        FunctionFactory::Case::Insensitive);
 
     factory.registerFunction<FunctionArrayShuffleImpl<FunctionArrayPartialShuffleTraits>>(
         FunctionDocumentation{
@@ -221,8 +223,8 @@ It is possible to override the seed to produce stable results:
                 {"explicit_seed", "SELECT arrayPartialShuffle([1, 2, 3, 4], 2, 41)", ""},
                 {"materialize",
                  "SELECT arrayPartialShuffle(materialize([1, 2, 3, 4]), 2, 42), arrayPartialShuffle([1, 2, 3], 2, 42) FROM numbers(10)", ""}},
-            .categories{"Array"}},
-        FunctionFactory::CaseInsensitive);
+            .category{"Arrays"}},
+        FunctionFactory::Case::Insensitive);
 }
 
 }

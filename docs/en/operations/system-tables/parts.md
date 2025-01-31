@@ -16,7 +16,20 @@ Columns:
     - `YYYYMM` for automatic partitioning by month.
     - `any_string` when partitioning manually.
 
-- `name` ([String](../../sql-reference/data-types/string.md)) – Name of the data part.
+- `name` ([String](../../sql-reference/data-types/string.md)) – Name of the data part. The part naming structure can be used to determine many aspects of the data, ingest, and merge patterns. The part naming format is the following:
+
+```
+<partition_id>_<minimum_block_number>_<maximum_block_number>_<level>_<data_version>
+```
+
+* Definitions:
+     - `partition_id` - identifies the partition key
+     - `minimum_block_number` - identifies the minimum block number in the part. ClickHouse always merges continuous blocks
+     - `maximum_block_number` - identifies the maximum block number in the part
+     - `level` - incremented by one with each additional merge on the part. A level of 0 indicates this is a new part that has not been merged. It is important to remember that all parts in ClickHouse are always immutable
+     - `data_version` - optional value, incremented when a part is mutated (again, mutated data is always only written to a new part, since parts are immutable)
+
+- `uuid` ([UUID](../../sql-reference/data-types/uuid.md)) -  The UUID of data part.
 
 - `part_type` ([String](../../sql-reference/data-types/string.md)) — The data part storing format.
 
@@ -38,6 +51,8 @@ Columns:
 - `data_compressed_bytes` ([UInt64](../../sql-reference/data-types/int-uint.md)) – Total size of compressed data in the data part. All the auxiliary files (for example, files with marks) are not included.
 
 - `data_uncompressed_bytes` ([UInt64](../../sql-reference/data-types/int-uint.md)) – Total size of uncompressed data in the data part. All the auxiliary files (for example, files with marks) are not included.
+
+- `primary_key_size` ([UInt64](../../sql-reference/data-types/int-uint.md)) – The amount of memory (in bytes) used by primary key values in the primary.idx/cidx file on disk.
 
 - `marks_bytes` ([UInt64](../../sql-reference/data-types/int-uint.md)) – The size of the file with marks.
 
@@ -63,9 +78,9 @@ Columns:
 
 - `partition_id` ([String](../../sql-reference/data-types/string.md)) – ID of the partition.
 
-- `min_block_number` ([UInt64](../../sql-reference/data-types/int-uint.md)) – The minimum number of data parts that make up the current part after merging.
+- `min_block_number` ([UInt64](../../sql-reference/data-types/int-uint.md)) – The minimum data block number that makes up the current part after merging.
 
-- `max_block_number` ([UInt64](../../sql-reference/data-types/int-uint.md)) – The maximum number of data parts that make up the current part after merging.
+- `max_block_number` ([UInt64](../../sql-reference/data-types/int-uint.md)) – The maximum data block number that makes up the current part after merging.
 
 - `level` ([UInt32](../../sql-reference/data-types/int-uint.md)) – Depth of the merge tree. Zero means that the current part was created by insert rather than by merging other parts.
 

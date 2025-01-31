@@ -4,7 +4,11 @@ sidebar_position: 84
 sidebar_label: Hive
 ---
 
+import CloudNotSupportedBadge from '@theme/badges/CloudNotSupportedBadge';
+
 # Hive
+
+<CloudNotSupportedBadge/>
 
 The Hive engine allows you to perform `SELECT` queries on HDFS Hive table. Currently it supports input formats as below:
 
@@ -60,7 +64,7 @@ Before using cache, add it to `config.xml`
 - limit_size: Required. The maximum size(in bytes) of local cache files.
 - bytes_read_before_flush: Control bytes before flush to local filesystem when downloading file from remote filesystem. The default value is 1MB.
 
-When ClickHouse is started up with local cache for remote filesystem enabled, users can still choose not to use cache with `settings use_local_cache_for_remote_fs = 0` in their query. `use_local_cache_for_remote_fs` is `false` in default.
+When ClickHouse is started up with local cache for remote filesystem enabled, users can still choose not to use cache with `settings use_local_cache_for_remote_storage = 0` in their query. `use_local_cache_for_remote_storage` is `1` by default.
 
 ### Query Hive Table with ORC Input Format
 

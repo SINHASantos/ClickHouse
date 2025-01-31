@@ -1,5 +1,6 @@
-#include <Functions/array/arraySort.h>
 #include <Functions/FunctionFactory.h>
+#include <Functions/array/arraySort.h>
+#include <Common/iota.h>
 
 namespace DB
 {
@@ -45,7 +46,10 @@ ColumnPtr ArraySortImpl<positive, is_partial>::execute(
                     ErrorCodes::LOGICAL_ERROR,
                     "Expected fixed arguments to get the limit for partial array sort"
                 );
-            return fixed_arguments[0].column.get()->getUInt(0);
+
+            /// During dryRun the input column might be empty
+            if (!fixed_arguments[0].column->empty())
+                return fixed_arguments[0].column->getUInt(0);
         }
         return 0;
     }();
@@ -55,9 +59,7 @@ ColumnPtr ArraySortImpl<positive, is_partial>::execute(
     size_t size = offsets.size();
     size_t nested_size = array.getData().size();
     IColumn::Permutation permutation(nested_size);
-
-    for (size_t i = 0; i < nested_size; ++i)
-        permutation[i] = i;
+    iota(permutation.data(), nested_size, IColumn::Permutation::value_type(0));
 
     ColumnArray::Offset current_offset = 0;
     for (size_t i = 0; i < size; ++i)
@@ -112,7 +114,7 @@ For more details see documentation of `arraySort`.
             {"retain_sorted", "SELECT arrayResize(arrayPartialSort(2, [5, 9, 1, 3]), 2)", ""},
             {"lambda_simple", "SELECT arrayPartialSort((x) -> -x, 2, [5, 9, 1, 3])", ""},
             {"lambda_complex", "SELECT arrayPartialSort((x, y) -> -y, 1, [0, 1, 2], [1, 2, 3]) as res", ""}},
-        .categories{"Array"}});
+        .category{"Array"}});
 
     factory.registerFunction<FunctionArrayPartialReverseSort>(FunctionDocumentation{
         .description=R"(
@@ -140,7 +142,7 @@ For more details see documentation of `arraySort`.
             {"retain_sorted", "SELECT arrayResize(arrayPartialReverseSort(2, [5, 9, 1, 3]), 2)", ""},
             {"lambda_simple", "SELECT arrayPartialReverseSort((x) -> -x, 2, [5, 9, 1, 3])", ""},
             {"lambda_complex", "SELECT arrayPartialReverseSort((x, y) -> -y, 1, [0, 1, 2], [1, 2, 3]) as res", ""}},
-        .categories{"Array"}});
+        .category{"Array"}});
 }
 
 }

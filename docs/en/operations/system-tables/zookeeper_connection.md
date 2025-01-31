@@ -1,7 +1,11 @@
 ---
 slug: /en/operations/system-tables/zookeeper_connection
 ---
-#zookeeper_connection
+import SystemTableCloud from '@site/docs/en/_snippets/_system_table_cloud.md';
+
+# zookeeper_connection
+
+<SystemTableCloud/>
 
 This table does not exist if ZooKeeper is not configured. The 'system.zookeeper_connection' table shows current connections to ZooKeeper (including auxiliary ZooKeepers). Each row shows information about one connection.
 
@@ -16,6 +20,7 @@ Columns:
 -   `is_expired` ([UInt8](../../sql-reference/data-types/int-uint.md)) — Is the current connection expired.
 -   `keeper_api_version` ([String](../../sql-reference/data-types/string.md)) — Keeper API version.
 -   `client_id` ([UInt64](../../sql-reference/data-types/int-uint.md)) — Session id of the connection.
+-   `xid` ([Int32](../../sql-reference/data-types/int-uint.md)) — Xid of the current session.
 
 Example:
 

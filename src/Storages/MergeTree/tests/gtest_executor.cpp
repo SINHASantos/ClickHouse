@@ -34,12 +34,14 @@ public:
 
         auto choice = distribution(generator);
         if (choice == 0)
-            throw std::runtime_error("Unlucky...");
+            throw TestException();
 
         return false;
     }
 
-    StorageID getStorageID() override
+    void cancel() noexcept override { /* no op */ }
+
+    StorageID getStorageID() const override
     {
         return {"test", name};
     }
@@ -48,10 +50,11 @@ public:
     {
         auto choice = distribution(generator);
         if (choice == 0)
-            throw std::runtime_error("Unlucky...");
+            throw TestException();
     }
 
-    Priority getPriority() override { return {}; }
+    Priority getPriority() const override { return {}; }
+    String getQueryId() const override { return {}; }
 
 private:
     std::mt19937 generator;
@@ -79,14 +82,17 @@ public:
         return --step_count;
     }
 
-    StorageID getStorageID() override
+    void cancel() noexcept override { chassert(false, "Not implemented"); }
+
+    StorageID getStorageID() const override
     {
         return {"test", name};
     }
 
     void onCompleted() override {}
 
-    Priority getPriority() override { return priority; }
+    Priority getPriority() const override { return priority; }
+    String getQueryId() const override { return "test::lambda"; }
 
 private:
     String name;

@@ -13,12 +13,12 @@
 #include <IO/WriteBufferFromVector.h>
 #include <IO/WriteHelpers.h>
 
+
 namespace DB
 {
 
     namespace ErrorCodes
     {
-        extern const int CANNOT_FORMAT_DATETIME;
         extern const int ILLEGAL_TYPE_OF_ARGUMENT;
     }
 
@@ -34,8 +34,8 @@ namespace DB
         ColumnPtr executeImpl(const ColumnsWithTypeAndName & arguments, const DataTypePtr &, size_t input_rows_count) const override
         {
             using ColVecType = typename FromDataType::ColumnType;
-            const ColVecType * col_from = checkAndGetColumn<ColVecType>(arguments[0].column.get());
-            const typename ColVecType::Container & vec_from = col_from->getData();
+            const ColVecType & col_from = checkAndGetColumn<ColVecType>(*arguments[0].column);
+            const typename ColVecType::Container & vec_from = col_from.getData();
 
             auto col_to = ColumnString::create();
             ColumnString::Chars & data_to = col_to->getChars();
@@ -56,25 +56,14 @@ namespace DB
             {
                 if constexpr (nullOnErrors)
                 {
-                    try
-                    {
-                        const GregorianDate<> gd(vec_from[i]);
-                        gd.write(write_buffer);
-                        (*vec_null_map_to)[i] = false;
-                    }
-                    catch (const Exception & e)
-                    {
-                        if (e.code() == ErrorCodes::CANNOT_FORMAT_DATETIME)
-                            (*vec_null_map_to)[i] = true;
-                        else
-                            throw;
-                    }
+                    GregorianDate gd;
+                    (*vec_null_map_to)[i] = !(gd.tryInit(vec_from[i]) && gd.tryWrite(write_buffer));
                     writeChar(0, write_buffer);
                     offsets_to[i] = write_buffer.count();
                 }
                 else
                 {
-                    const GregorianDate<> gd(vec_from[i]);
+                    GregorianDate gd(vec_from[i]);
                     gd.write(write_buffer);
                     writeChar(0, write_buffer);
                     offsets_to[i] = write_buffer.count();
@@ -190,9 +179,8 @@ namespace DB
                 */
             if (WhichDataType(from_type_not_null).isNothing()) // Nullable(Nothing)
                 return std::make_unique<FunctionBaseFromModifiedJulianDay<Name, DataTypeInt32, nullOnErrors>>(argument_types, return_type);
-            else
-                // Should not happen.
-                throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT, "The argument of function {} must be integral", getName());
+            // Should not happen.
+            throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT, "The argument of function {} must be integral", getName());
         }
 
         DataTypePtr getReturnTypeImpl(const DataTypes & arguments) const override

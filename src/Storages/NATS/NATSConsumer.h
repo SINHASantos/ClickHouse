@@ -16,15 +16,16 @@ class Logger;
 namespace DB
 {
 
+using NATSSubscriptionPtr = std::unique_ptr<natsSubscription, decltype(&natsSubscription_Destroy)>;
+
 class NATSConsumer
 {
 public:
     NATSConsumer(
-        std::shared_ptr<NATSConnectionManager> connection_,
-        StorageNATS & storage_,
+        NATSConnectionPtr connection_,
         std::vector<String> & subjects_,
         const String & subscribe_queue_name,
-        Poco::Logger * log_,
+        LoggerPtr log_,
         uint32_t queue_size_,
         const std::atomic<bool> & stopped_);
 
@@ -45,6 +46,7 @@ public:
     size_t queueSize() { return received.size(); }
 
     auto getSubject() const { return current.subject; }
+    const String & getCurrentMessage() const { return current.message; }
 
     /// Return read buffer containing next available message
     /// or nullptr if there are no messages to process.
@@ -53,14 +55,12 @@ public:
 private:
     static void onMsg(natsConnection * nc, natsSubscription * sub, natsMsg * msg, void * consumer);
 
-    std::shared_ptr<NATSConnectionManager> connection;
-    StorageNATS & storage;
-    std::vector<SubscriptionPtr> subscriptions;
+    NATSConnectionPtr connection;
+    std::vector<NATSSubscriptionPtr> subscriptions;
     std::vector<String> subjects;
-    Poco::Logger * log;
+    LoggerPtr log;
     const std::atomic<bool> & stopped;
 
-    bool subscribed = false;
     String queue_name;
 
     String channel_id;

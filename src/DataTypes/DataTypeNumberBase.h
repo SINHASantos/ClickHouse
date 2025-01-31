@@ -25,7 +25,6 @@ public:
     using ColumnType = ColumnVector<T>;
 
     const char * getFamilyName() const override { return TypeName<T>.data(); }
-    String getSQLCompatibleName() const override;
     TypeIndex getTypeId() const override { return TypeToTypeIndex<T>; }
 
     Field getDefault() const override;
@@ -69,6 +68,7 @@ extern template class DataTypeNumberBase<Int32>;
 extern template class DataTypeNumberBase<Int64>;
 extern template class DataTypeNumberBase<Int128>;
 extern template class DataTypeNumberBase<Int256>;
+extern template class DataTypeNumberBase<BFloat16>;
 extern template class DataTypeNumberBase<Float32>;
 extern template class DataTypeNumberBase<Float64>;
 

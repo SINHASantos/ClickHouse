@@ -1,8 +1,8 @@
+#include <exception>
 #include <Processors/Transforms/ExceptionKeepingTransform.h>
 #include <Common/ThreadStatus.h>
 #include <Common/Stopwatch.h>
 #include <base/scope_guard.h>
-#include <iostream>
 
 namespace DB
 {

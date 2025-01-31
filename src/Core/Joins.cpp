@@ -13,6 +13,7 @@ const char * toString(JoinKind kind)
         case JoinKind::Full: return "FULL";
         case JoinKind::Cross: return "CROSS";
         case JoinKind::Comma: return "COMMA";
+        case JoinKind::Paste: return "PASTE";
     }
 };
 
@@ -75,6 +76,15 @@ const char * toString(JoinTableSide join_table_side)
         case JoinTableSide::Left: return "LEFT";
         case JoinTableSide::Right: return "RIGHT";
     }
+}
+
+JoinKind reverseJoinKind(JoinKind kind)
+{
+    if (kind == JoinKind::Right)
+        return JoinKind::Left;
+    if (kind == JoinKind::Left)
+        return JoinKind::Right;
+    return kind;
 }
 
 }

@@ -1,7 +1,11 @@
 ---
 slug: /en/operations/system-tables/events
 ---
+import SystemTableCloud from '@site/docs/en/_snippets/_system_table_cloud.md';
+
 # events
+
+<SystemTableCloud/>
 
 Contains information about the number of events that have occurred in the system. For example, in the table, you can find how many `SELECT` queries were processed since the ClickHouse server started.
 
@@ -10,6 +14,9 @@ Columns:
 - `event` ([String](../../sql-reference/data-types/string.md)) — Event name.
 - `value` ([UInt64](../../sql-reference/data-types/int-uint.md)) — Number of events occurred.
 - `description` ([String](../../sql-reference/data-types/string.md)) — Event description.
+- `name` ([String](../../sql-reference/data-types/string.md)) — Alias for `event`.
+
+You can find all supported events in source file [src/Common/ProfileEvents.cpp](https://github.com/ClickHouse/ClickHouse/blob/master/src/Common/ProfileEvents.cpp).
 
 **Example**
 

@@ -4,8 +4,8 @@
 #include <Common/PODArray_fwd.h>
 #include <Common/Exception.h>
 
-#define MAX_FIXEDSTRING_SIZE 0xFFFFFF
-#define MAX_FIXEDSTRING_SIZE_WITHOUT_SUSPICIOUS 256
+constexpr size_t MAX_FIXEDSTRING_SIZE = 0xFFFFFF;
+constexpr size_t MAX_FIXEDSTRING_SIZE_WITHOUT_SUSPICIOUS = 256;
 
 
 namespace DB
@@ -42,8 +42,6 @@ public:
     TypeIndex getTypeId() const override { return type_id; }
 
     const char * getFamilyName() const override { return "FixedString"; }
-    /// Use TEXT for compatibility with MySQL to allow arbitrary bytes.
-    String getSQLCompatibleName() const override { return "TEXT"; }
 
     size_t getN() const
     {

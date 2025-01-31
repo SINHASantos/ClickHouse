@@ -17,9 +17,11 @@ void printPipeline(const Processors & processors, const Statuses & statuses, Wri
     out << "  rankdir=\"LR\";\n";
     out << "  { node [shape = rect]\n";
 
-    auto get_proc_id = [](const IProcessor & proc) -> UInt64
+    std::unordered_map<const void *, std::size_t> pointer_to_id;
+    auto get_proc_id = [&](const IProcessor & proc) -> std::size_t
     {
-        return reinterpret_cast<std::uintptr_t>(&proc);
+        auto [it, inserted] = pointer_to_id.try_emplace(&proc, pointer_to_id.size());
+        return it->second;
     };
 
     auto statuses_iter = statuses.begin();
@@ -28,7 +30,7 @@ void printPipeline(const Processors & processors, const Statuses & statuses, Wri
     for (const auto & processor : processors)
     {
         const auto & description = processor->getDescription();
-        out << "    n" << get_proc_id(*processor) << "[label=\"" << processor->getName() << (description.empty() ? "" : ":") << description;
+        out << "    n" << get_proc_id(*processor) << "[label=\"" << processor->getUniqID() << (description.empty() ? "" : ":") << description;
 
         if (statuses_iter != statuses.end())
         {

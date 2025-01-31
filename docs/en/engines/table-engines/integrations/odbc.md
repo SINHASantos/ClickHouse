@@ -4,7 +4,11 @@ sidebar_position: 150
 sidebar_label: ODBC
 ---
 
+import CloudNotSupportedBadge from '@theme/badges/CloudNotSupportedBadge';
+
 # ODBC
+
+<CloudNotSupportedBadge/>
 
 Allows ClickHouse to connect to external databases via [ODBC](https://en.wikipedia.org/wiki/Open_Database_Connectivity).
 
@@ -54,7 +58,7 @@ $ sudo mysql
 
 ``` sql
 mysql> CREATE USER 'clickhouse'@'localhost' IDENTIFIED BY 'clickhouse';
-mysql> GRANT ALL PRIVILEGES ON *.* TO 'clickhouse'@'clickhouse' WITH GRANT OPTION;
+mysql> GRANT ALL PRIVILEGES ON *.* TO 'clickhouse'@'localhost' WITH GRANT OPTION;
 ```
 
 Then configure the connection in `/etc/odbc.ini`.
@@ -66,7 +70,7 @@ DRIVER = /usr/local/lib/libmyodbc5w.so
 SERVER = 127.0.0.1
 PORT = 3306
 DATABASE = test
-USERNAME = clickhouse
+USER = clickhouse
 PASSWORD = clickhouse
 ```
 
@@ -83,6 +87,9 @@ $ isql -v mysqlconn
 Table in MySQL:
 
 ``` text
+mysql> CREATE DATABASE test;
+Query OK, 1 row affected (0,01 sec)
+
 mysql> CREATE TABLE `test`.`test` (
     ->   `int_id` INT NOT NULL AUTO_INCREMENT,
     ->   `int_nullable` INT NULL DEFAULT NULL,
@@ -91,10 +98,10 @@ mysql> CREATE TABLE `test`.`test` (
     ->   PRIMARY KEY (`int_id`));
 Query OK, 0 rows affected (0,09 sec)
 
-mysql> insert into test (`int_id`, `float`) VALUES (1,2);
+mysql> insert into test.test (`int_id`, `float`) VALUES (1,2);
 Query OK, 1 row affected (0,00 sec)
 
-mysql> select * from test;
+mysql> select * from test.test;
 +------+----------+-----+----------+
 | int_id | int_nullable | float | float_nullable |
 +------+----------+-----+----------+

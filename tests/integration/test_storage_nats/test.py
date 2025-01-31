@@ -1,22 +1,17 @@
-import pytest
-
-# FIXME This test is too flaky
-# https://github.com/ClickHouse/ClickHouse/issues/39185
-
-pytestmark = pytest.mark.skip
-
+import asyncio
 import json
+import logging
+import math
 import os.path as p
 import random
 import subprocess
 import threading
-import logging
 import time
 from random import randrange
-import math
 
-import asyncio
+import pytest
 from google.protobuf.internal.encoder import _VarintBytes
+
 from helpers.client import QueryRuntimeException
 from helpers.cluster import ClickHouseCluster, check_nats_is_available, nats_connect_ssl
 from helpers.test_tools import TSV
@@ -82,7 +77,6 @@ def nats_cluster():
     try:
         cluster.start()
         logging.debug("nats_id is {}".format(instance.cluster.nats_docker_id))
-        instance.query("CREATE DATABASE test")
 
         yield cluster
 
@@ -93,9 +87,13 @@ def nats_cluster():
 @pytest.fixture(autouse=True)
 def nats_setup_teardown():
     print("NATS is available - running test")
-    yield  # run test
-    instance.query("DROP DATABASE test SYNC")
+
+    instance.query("DROP DATABASE IF EXISTS test SYNC")
     instance.query("CREATE DATABASE test")
+
+    yield  # run test
+
+    instance.query("DROP DATABASE test")
 
 
 # Tests
@@ -114,7 +112,8 @@ async def nats_produce_messages(cluster_inst, subject, messages=(), bytes=None):
         await nc.publish(subject, message.encode())
     if bytes is not None:
         await nc.publish(subject, bytes)
-    logging.debug("Finished publising to " + subject)
+    await nc.flush()
+    logging.debug("Finished publishing to " + subject)
 
     await nc.close()
     return messages
@@ -126,6 +125,21 @@ def check_table_is_ready(instance, table_name):
         return True
     except Exception:
         return False
+
+
+def test_nats_select_empty(nats_cluster):
+    instance.query(
+        """
+        CREATE TABLE test.nats (key UInt64, value UInt64)
+            ENGINE = NATS
+            SETTINGS nats_url = 'nats1:4444',
+                     nats_subjects = 'empty',
+                     nats_format = 'TSV',
+                     nats_row_delimiter = '\\n';
+        """
+    )
+
+    assert int(instance.query("SELECT count() FROM test.nats")) == 0
 
 
 def test_nats_select(nats_cluster):
@@ -160,21 +174,6 @@ def test_nats_select(nats_cluster):
             break
 
     nats_check_result(result, True)
-
-
-def test_nats_select_empty(nats_cluster):
-    instance.query(
-        """
-        CREATE TABLE test.nats (key UInt64, value UInt64)
-            ENGINE = NATS
-            SETTINGS nats_url = 'nats1:4444',
-                     nats_subjects = 'empty',
-                     nats_format = 'TSV',
-                     nats_row_delimiter = '\\n';
-        """
-    )
-
-    assert int(instance.query("SELECT count() FROM test.nats")) == 0
 
 
 def test_nats_json_without_delimiter(nats_cluster):
@@ -854,6 +853,10 @@ def test_nats_many_inserts(nats_cluster):
         logging.debug("Table test.nats_consume is not yet ready")
         time.sleep(0.5)
 
+    while not check_table_is_ready(instance, "test.nats_many"):
+        logging.debug("Table test.nats_many is not yet ready")
+        time.sleep(0.5)
+
     messages_num = 10000
     values = []
     for i in range(messages_num):
@@ -1279,7 +1282,6 @@ def test_nats_restore_failed_connection_without_losses_on_write(nats_cluster):
 
 
 def test_nats_no_connection_at_startup_1(nats_cluster):
-    # no connection when table is initialized
     nats_cluster.pause_container("nats1")
     instance.query_and_get_error(
         """
@@ -1621,7 +1623,7 @@ def test_max_rows_per_message(nats_cluster):
 
     assert rows == num_rows
 
-    result = instance.query("SELECT * FROM test.view")
+    result = instance.query("SELECT * FROM test.view ORDER BY key")
     assert result == "0\t0\n10\t100\n20\t200\n30\t300\n40\t400\n"
 
 
@@ -1715,7 +1717,7 @@ def test_row_based_formats(nats_cluster):
         for i in range(num_rows):
             expected += str(i * 10) + "\t" + str(i * 100) + "\n"
 
-        result = instance.query("SELECT * FROM test.view")
+        result = instance.query("SELECT * FROM test.view ORDER BY key")
         assert result == expected
 
 
@@ -1772,10 +1774,16 @@ def test_block_based_formats_1(nats_cluster):
     data = []
     for message in insert_messages:
         splitted = message.split("\n")
-        assert splitted[0] == " \x1b[1mkey\x1b[0m   \x1b[1mvalue\x1b[0m"
+
+        assert len(splitted) >= 3
+        assert splitted[0] == "    key   value"
         assert splitted[1] == ""
         assert splitted[-1] == ""
-        data += [line.split() for line in splitted[2:-1]]
+
+        for line in splitted[2:-1]:
+            elements = line.split()
+            assert len(elements) >= 3
+            data += [[elements[1], elements[2]]]
 
     assert data == [
         ["0", "0"],

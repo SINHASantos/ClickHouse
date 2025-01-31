@@ -1,27 +1,27 @@
 #pragma once
 
+#include <Disks/ObjectStorages/StoredObject.h>
 #include <Interpreters/Context_fwd.h>
 #include <Core/Defines.h>
 #include <Core/Names.h>
 #include <base/types.h>
 #include <Common/CurrentMetrics.h>
 #include <Common/Exception.h>
-#include <Disks/Executor.h>
+#include <Common/ThreadPool_fwd.h>
 #include <Disks/DiskType.h>
 #include <IO/ReadSettings.h>
 #include <IO/WriteSettings.h>
-#include <Disks/ObjectStorages/IObjectStorage.h>
 #include <Disks/WriteMode.h>
 #include <Disks/DirectoryIterator.h>
-#include <Disks/IDiskTransaction.h>
 
 #include <memory>
-#include <mutex>
-#include <utility>
 #include <boost/noncopyable.hpp>
 #include <Poco/Timestamp.h>
 #include <filesystem>
+#include <optional>
 #include <sys/stat.h>
+
+#include "config.h"
 
 
 namespace fs = std::filesystem;
@@ -38,6 +38,13 @@ namespace Poco
 namespace DB
 {
 
+#if USE_AWS_S3
+namespace S3
+{
+class Client;
+}
+#endif
+
 namespace ErrorCodes
 {
     extern const int NOT_IMPLEMENTED;
@@ -49,7 +56,6 @@ using DisksMap = std::map<String, DiskPtr>;
 
 class IReservation;
 using ReservationPtr = std::unique_ptr<IReservation>;
-using Reservations = std::vector<ReservationPtr>;
 
 class ReadBufferFromFileBase;
 class WriteBufferFromFileBase;
@@ -63,6 +69,8 @@ using RemoveBatchRequest = std::vector<RemoveRequest>;
 
 class DiskObjectStorage;
 using DiskObjectStoragePtr = std::shared_ptr<DiskObjectStorage>;
+
+using ObjectAttributes = std::map<std::string, std::string>;
 
 /**
  * Provide interface for reservation.
@@ -109,12 +117,9 @@ using SyncGuardPtr = std::unique_ptr<ISyncGuard>;
 class IDisk : public Space
 {
 public:
-    /// Default constructor.
-    explicit IDisk(const String & name_, std::shared_ptr<Executor> executor_ = std::make_shared<SyncExecutor>())
-        : name(name_)
-        , executor(executor_)
-    {
-    }
+    IDisk(const String & name_, const Poco::Util::AbstractConfiguration & config, const String & config_prefix);
+    explicit IDisk(const String & name_);
+    ~IDisk() override;
 
     /// This is a disk.
     bool isDisk() const override { return true; }
@@ -129,25 +134,23 @@ public:
     const String & getName() const override { return name; }
 
     /// Total available space on the disk.
-    virtual UInt64 getTotalSpace() const = 0;
+    virtual std::optional<UInt64> getTotalSpace() const = 0;
 
     /// Space currently available on the disk.
-    virtual UInt64 getAvailableSpace() const = 0;
+    virtual std::optional<UInt64> getAvailableSpace() const = 0;
 
     /// Space available for reservation (available space minus reserved space).
-    virtual UInt64 getUnreservedSpace() const = 0;
+    virtual std::optional<UInt64> getUnreservedSpace() const = 0;
 
     /// Amount of bytes which should be kept free on the disk.
     virtual UInt64 getKeepingFreeSpace() const { return 0; }
 
-    /// Return `true` if the specified file exists.
-    virtual bool exists(const String & path) const = 0;
+    /// Return `true` if the specified file/directory exists.
+    virtual bool existsFile(const String & path) const = 0;
+    virtual bool existsDirectory(const String & path) const = 0;
 
-    /// Return `true` if the specified file exists and it's a regular file (not a directory or special file type).
-    virtual bool isFile(const String & path) const = 0;
-
-    /// Return `true` if the specified file exists and it's a directory.
-    virtual bool isDirectory(const String & path) const = 0;
+    /// This method can be less efficient than the above.
+    virtual bool existsFileOrDirectory(const String & path) const = 0;
 
     /// Return size of the specified file.
     virtual size_t getFileSize(const String & path) const = 0;
@@ -181,18 +184,37 @@ public:
     /// If a file with `to_path` path already exists, it will be replaced.
     virtual void replaceFile(const String & from_path, const String & to_path) = 0;
 
-    /// Recursively copy data containing at `from_path` to `to_path` located at `to_disk`.
-    virtual void copy(const String & from_path, const std::shared_ptr<IDisk> & to_disk, const String & to_path);
+    virtual void renameExchange(const std::string &, const std::string &)
+    {
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED, "Method `renameExchange()` not implemented for disk: {}", getDataSourceDescription().toString());
+    }
+
+    virtual bool renameExchangeIfSupported(const std::string &, const std::string &)
+    {
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "Method `renameExchangeIfSupported()` not implemented for disk: {}",
+            getDataSourceDescription().toString());
+    }
 
     /// Recursively copy files from from_dir to to_dir. Create to_dir if not exists.
-    virtual void copyDirectoryContent(const String & from_dir, const std::shared_ptr<IDisk> & to_disk, const String & to_dir);
+    virtual void copyDirectoryContent(
+        const String & from_dir,
+        const std::shared_ptr<IDisk> & to_disk,
+        const String & to_dir,
+        const ReadSettings & read_settings,
+        const WriteSettings & write_settings,
+        const std::function<void()> & cancellation_hook);
 
     /// Copy file `from_file_path` to `to_file_path` located at `to_disk`.
     virtual void copyFile( /// NOLINT
         const String & from_file_path,
         IDisk & to_disk,
         const String & to_file_path,
-        const WriteSettings & settings = {});
+        const ReadSettings & read_settings,
+        const WriteSettings & write_settings = {},
+        const std::function<void()> & cancellation_hook = {});
 
     /// List files at `path` and add their names to `file_names`
     virtual void listFiles(const String & path, std::vector<String> & file_names) const = 0;
@@ -200,9 +222,17 @@ public:
     /// Open the file for read and return ReadBufferFromFileBase object.
     virtual std::unique_ptr<ReadBufferFromFileBase> readFile( /// NOLINT
         const String & path,
-        const ReadSettings & settings = ReadSettings{},
+        const ReadSettings & settings,
         std::optional<size_t> read_hint = {},
         std::optional<size_t> file_size = {}) const = 0;
+
+    /// Returns nullptr if the file does not exist, otherwise opens it for reading.
+    /// This method can save a request. The default implementation will do a separate `exists` call.
+    virtual std::unique_ptr<ReadBufferFromFileBase> readFileIfExists( /// NOLINT
+        const String & path,
+        const ReadSettings & settings = ReadSettings{},
+        std::optional<size_t> read_hint = {},
+        std::optional<size_t> file_size = {}) const;
 
     /// Open the file for write and return WriteBufferFromFileBase object.
     virtual std::unique_ptr<WriteBufferFromFileBase> writeFile( /// NOLINT
@@ -221,8 +251,21 @@ public:
     /// Remove directory. Throws exception if it's not a directory or if directory is not empty.
     virtual void removeDirectory(const String & path) = 0;
 
+    virtual void removeDirectoryIfExists(const String &)
+    {
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "Method `removeDirectoryIfExists()` is not implemented for disk: {}",
+            getDataSourceDescription().toString());
+    }
+
     /// Remove file or directory with all children. Use with extra caution. Throws exception if file doesn't exists.
     virtual void removeRecursive(const String & path) = 0;
+
+    /// Remove file or directory with all children. Use with extra caution. Throws exception if file doesn't exists.
+    /// Differs from removeRecursive for S3/HDFS disks
+    /// Limits the number of removing files in batches to prevent high memory consumption.
+    virtual void removeRecursiveWithLimit(const String & path) { removeRecursive(path); }
 
     /// Remove file. Throws exception if file doesn't exists or if directory is not empty.
     /// Differs from removeFile for S3/HDFS disks
@@ -245,6 +288,9 @@ public:
     /// E.g. for DiskLocal it's the absolute path to the file and for DiskObjectStorage it's
     /// StoredObject::remote_path for each stored object combined with the name of the objects' namespace.
     virtual Strings getBlobPath(const String & path) const = 0;
+
+    /// Returns whether the blob paths this disk uses are randomly generated.
+    virtual bool areBlobPathsRandom() const = 0;
 
     using WriteBlobFunction = std::function<size_t(const Strings & blob_path, WriteMode mode, const std::optional<ObjectAttributes> & object_attributes)>;
 
@@ -276,7 +322,7 @@ public:
     {
         throw Exception(ErrorCodes::NOT_IMPLEMENTED,
             "Method `getCacheLayersNames()` is not implemented for disk: {}",
-            toString(getDataSourceDescription().type));
+            getDataSourceDescription().toString());
     }
 
     /// Returns a list of storage objects (contains path, size, ...).
@@ -286,27 +332,29 @@ public:
     {
         throw Exception(ErrorCodes::NOT_IMPLEMENTED,
             "Method `getStorageObjects()` not implemented for disk: {}",
-            toString(getDataSourceDescription().type));
+            getDataSourceDescription().toString());
+    }
+
+    virtual std::optional<StoredObjects> getStorageObjectsIfExist(const String & path) const
+    {
+        if (existsFile(path))
+            return getStorageObjects(path);
+        return std::nullopt;
     }
 
     /// For one local path there might be multiple remote paths in case of Log family engines.
     struct LocalPathWithObjectStoragePaths
     {
         std::string local_path;
-        std::string common_prefix_for_objects;
         StoredObjects objects;
 
         LocalPathWithObjectStoragePaths(
-            const std::string & local_path_, const std::string & common_prefix_for_objects_, StoredObjects && objects_)
-            : local_path(local_path_), common_prefix_for_objects(common_prefix_for_objects_), objects(std::move(objects_)) {}
+            const std::string & local_path_,
+            StoredObjects && objects_)
+            : local_path(local_path_)
+            , objects(std::move(objects_))
+        {}
     };
-
-    virtual void getRemotePathsRecursive(const String &, std::vector<LocalPathWithObjectStoragePaths> &)
-    {
-        throw Exception(ErrorCodes::NOT_IMPLEMENTED,
-            "Method `getRemotePathsRecursive() not implemented for disk: {}`",
-            toString(getDataSourceDescription().type));
-    }
 
     /// Batch request to remove multiple files.
     /// May be much faster for blob storage.
@@ -330,6 +378,49 @@ public:
     /// Create hardlink from `src_path` to `dst_path`.
     virtual void createHardLink(const String & src_path, const String & dst_path) = 0;
 
+    virtual bool isSymlinkSupported() const { return false; }
+    virtual bool isSymlink(const String &) const
+    {
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED, "Method isSymlink() is not implemented for disk type: {}", getDataSourceDescription().toString());
+    }
+
+    virtual bool isSymlinkNoThrow(const String &) const
+    {
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "Method isSymlinkNothrow() is not implemented for disk type: {}",
+            getDataSourceDescription().toString());
+    }
+
+    virtual void createDirectoriesSymlink(const String &, const String &)
+    {
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "Method createDirectoriesSymlink() is not implemented for disk type: {}",
+            getDataSourceDescription().toString());
+    }
+
+    virtual String readSymlink(const fs::path &) const
+    {
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "Method readSymlink() is not implemented for disk type: {}",
+            getDataSourceDescription().toString());
+    }
+
+    virtual bool equivalent(const String &, const String &) const
+    {
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED, "Method equivalent() is not implemented for disk type: {}", getDataSourceDescription().toString());
+    }
+
+    virtual bool equivalentNoThrow(const String &, const String &) const
+    {
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED, "Method equivalent() is not implemented for disk type: {}", getDataSourceDescription().toString());
+    }
+
     /// Truncate file to specified size.
     virtual void truncateFile(const String & path, size_t size);
 
@@ -351,6 +442,8 @@ public:
 
     virtual bool isWriteOnce() const { return false; }
 
+    virtual bool supportsHardLinks() const { return true; }
+
     /// Check if disk is broken. Broken disks will have 0 space and cannot be used.
     virtual bool isBroken() const { return false; }
 
@@ -369,8 +462,8 @@ public:
 
     /// Check file exists and ClickHouse has an access to it
     /// Overrode in remote FS disks (s3/hdfs)
-    /// Required for remote disk to ensure that replica has access to data written by other node
-    virtual bool checkUniqueId(const String & id) const { return exists(id); }
+    /// Required for remote disk to ensure that the replica has access to data written by other node
+    virtual bool checkUniqueId(const String & id) const { return existsFile(id); }
 
     /// Invoked on partitions freeze query.
     virtual void onFreeze(const String &) { }
@@ -379,7 +472,7 @@ public:
     virtual SyncGuardPtr getDirectorySyncGuard(const String & path) const;
 
     /// Applies new settings for disk in runtime.
-    virtual void applyNewSettings(const Poco::Util::AbstractConfiguration &, ContextPtr, const String &, const DisksMap &) {}
+    virtual void applyNewSettings(const Poco::Util::AbstractConfiguration & config, ContextPtr context, const String & config_prefix, const DisksMap & map);
 
     /// Quite leaky abstraction. Some disks can use additional disk to store
     /// some parts of metadata. In general case we have only one disk itself and
@@ -393,7 +486,7 @@ public:
         throw Exception(
             ErrorCodes::NOT_IMPLEMENTED,
             "Method getMetadataStorage() is not implemented for disk type: {}",
-            toString(getDataSourceDescription().type));
+            getDataSourceDescription().toString());
     }
 
     /// Very similar case as for getMetadataDiskIfExistsOrSelf(). If disk has "metadata"
@@ -411,7 +504,7 @@ public:
     ///  Device: 10301h/66305d   Inode: 3109907     Links: 1
     /// Why we have always zero by default? Because normal filesystem
     /// manages hardlinks by itself. So you can always remove hardlink and all
-    /// other alive harlinks will not be removed.
+    /// other alive hardlinks will not be removed.
     virtual UInt32 getRefCount(const String &) const { return 0; }
 
     /// Revision is an incremental counter of disk operation.
@@ -427,7 +520,7 @@ public:
         throw Exception(
             ErrorCodes::NOT_IMPLEMENTED,
             "Method getObjectStorage() is not implemented for disk type: {}",
-            toString(getDataSourceDescription().type));
+            getDataSourceDescription().toString());
     }
 
     /// Create disk object storage according to disk type.
@@ -438,7 +531,7 @@ public:
         throw Exception(
             ErrorCodes::NOT_IMPLEMENTED,
             "Method createDiskObjectStorage() is not implemented for disk type: {}",
-            toString(getDataSourceDescription().type));
+            getDataSourceDescription().toString());
     }
 
     virtual bool supportsStat() const { return false; }
@@ -448,30 +541,48 @@ public:
     virtual void chmod(const String & /*path*/, mode_t /*mode*/) { throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Disk does not support chmod"); }
 
     /// Was disk created to be used without storage configuration?
-    bool isCustomDisk() const { return is_custom_disk; }
-
-    void markDiskAsCustom() { is_custom_disk = true; }
+    bool isCustomDisk() const { return custom_disk_settings_hash != 0; }
+    UInt128 getCustomDiskSettings() const { return custom_disk_settings_hash; }
+    void markDiskAsCustom(UInt128 settings_hash) { custom_disk_settings_hash = settings_hash; }
 
     virtual DiskPtr getDelegateDiskIfExists() const { return nullptr; }
 
+#if USE_AWS_S3
+    virtual std::shared_ptr<const S3::Client> getS3StorageClient() const
+    {
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "Method getS3StorageClient() is not implemented for disk type: {}",
+            getDataSourceDescription().toString());
+    }
+
+    virtual std::shared_ptr<const S3::Client> tryGetS3StorageClient() const { return nullptr; }
+#endif
+
+
 protected:
-    friend class DiskDecorator;
+    friend class DiskReadOnlyWrapper;
 
     const String name;
-
-    /// Returns executor to perform asynchronous operations.
-    virtual Executor & getExecutor() { return *executor; }
 
     /// Base implementation of the function copy().
     /// It just opens two files, reads data by portions from the first file, and writes it to the second one.
     /// A derived class may override copy() to provide a faster implementation.
-    void copyThroughBuffers(const String & from_path, const std::shared_ptr<IDisk> & to_disk, const String & to_path, bool copy_root_dir = true);
+    void copyThroughBuffers(
+        const String & from_path,
+        const std::shared_ptr<IDisk> & to_disk,
+        const String & to_path,
+        bool copy_root_dir,
+        const ReadSettings & read_settings,
+        WriteSettings write_settings,
+        const std::function<void()> & cancellation_hook);
 
     virtual void checkAccessImpl(const String & path);
 
 private:
-    std::shared_ptr<Executor> executor;
-    bool is_custom_disk = false;
+    std::unique_ptr<ThreadPool> copying_thread_pool;
+    // 0 means the disk is not custom, the disk is predefined in the config
+    UInt128 custom_disk_settings_hash = 0;
 
     /// Check access to the disk.
     void checkAccess();
@@ -490,7 +601,7 @@ public:
 
     /// Space available for reservation
     /// (with this reservation already take into account).
-    virtual UInt64 getUnreservedSpace() const = 0;
+    virtual std::optional<UInt64> getUnreservedSpace() const = 0;
 
     /// Get i-th disk where reservation take place.
     virtual DiskPtr getDisk(size_t i = 0) const = 0; /// NOLINT
@@ -532,6 +643,7 @@ inline String directoryPath(const String & path)
 {
     return fs::path(path).parent_path() / "";
 }
+
 
 }
 

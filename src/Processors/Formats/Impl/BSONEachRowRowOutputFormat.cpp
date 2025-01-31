@@ -36,9 +36,10 @@ namespace ErrorCodes
 static String toValidUTF8String(const String & name, const FormatSettings & settings)
 {
     WriteBufferFromOwnString buf;
-    WriteBufferValidUTF8 validating_buf(buf);
-    writeJSONString(name, validating_buf, settings);
-    validating_buf.finalize();
+    {
+        WriteBufferValidUTF8 validating_buf(buf);
+        writeJSONString(name, validating_buf, settings);
+    }
     /// Return value without quotes
     return buf.str().substr(1, buf.str().size() - 2);
 }
@@ -58,7 +59,7 @@ static void writeBSONSize(size_t size, WriteBuffer & buf)
     if (size > MAX_BSON_SIZE)
         throw Exception(ErrorCodes::INCORRECT_DATA, "Too large document/value size: {}. Maximum allowed size: {}.", size, MAX_BSON_SIZE);
 
-    writePODBinary<BSONSizeT>(BSONSizeT(size), buf);
+    writeBinaryLittleEndian(BSONSizeT(size), buf);
 }
 
 template <typename Type>
@@ -79,7 +80,7 @@ template <typename ColumnType, typename ValueType>
 static void writeBSONNumber(BSONType type, const IColumn & column, size_t row_num, const String & name, WriteBuffer & buf)
 {
     writeBSONTypeAndKeyName(type, name, buf);
-    writePODBinary<ValueType>(assert_cast<const ColumnType &>(column).getElement(row_num), buf);
+    writeBinaryLittleEndian(ValueType(assert_cast<const ColumnType &>(column).getElement(row_num)), buf);
 }
 
 template <typename StringColumnType>
@@ -109,8 +110,7 @@ static void writeBSONBigInteger(const IColumn & column, size_t row_num, const St
     writeBSONTypeAndKeyName(BSONType::BINARY, name, buf);
     writeBSONSize(sizeof(typename ColumnType::ValueType), buf);
     writeBSONType(BSONBinarySubtype::BINARY, buf);
-    auto data = assert_cast<const ColumnType &>(column).getDataAt(row_num);
-    buf.write(data.data, data.size);
+    writeBinaryLittleEndian(assert_cast<const ColumnType &>(column).getElement(row_num), buf);
 }
 
 size_t BSONEachRowRowOutputFormat::countBSONFieldSize(const IColumn & column, const DataTypePtr & data_type, size_t row_num, const String & name, const String & path, std::unordered_map<String, size_t> & nested_document_sizes)
@@ -407,7 +407,7 @@ void BSONEachRowRowOutputFormat::serializeField(const IColumn & column, const Da
             writeBSONTypeAndKeyName(BSONType::BINARY, name, out);
             writeBSONSize(sizeof(UUID), out);
             writeBSONType(BSONBinarySubtype::UUID, out);
-            writeBinary(assert_cast<const ColumnUUID &>(column).getElement(row_num), out);
+            writeBinaryLittleEndian(assert_cast<const ColumnUUID &>(column).getElement(row_num), out);
             break;
         }
         case TypeIndex::LowCardinality:
@@ -543,6 +543,7 @@ void registerOutputFormatBSONEachRow(FormatFactory & factory)
         [](WriteBuffer & buf, const Block & sample, const FormatSettings & _format_settings)
         { return std::make_shared<BSONEachRowRowOutputFormat>(buf, sample, _format_settings); });
     factory.markOutputFormatSupportsParallelFormatting("BSONEachRow");
+    factory.markOutputFormatNotTTYFriendly("BSONEachRow");
 }
 
 }

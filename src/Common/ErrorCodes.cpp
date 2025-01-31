@@ -13,7 +13,7 @@
   * - system.errors table
   */
 
-#define APPLY_FOR_ERROR_CODES(M) \
+#define APPLY_FOR_BUILTIN_ERROR_CODES(M) \
     M(0, OK) \
     M(1, UNSUPPORTED_METHOD) \
     M(2, UNSUPPORTED_PARAMETER) \
@@ -379,7 +379,6 @@
     M(467, CANNOT_PARSE_BOOL) \
     M(468, CANNOT_PTHREAD_ATTR) \
     M(469, VIOLATED_CONSTRAINT) \
-    M(470, QUERY_IS_NOT_SUPPORTED_IN_LIVE_VIEW) \
     M(471, INVALID_SETTING_VALUE) \
     M(472, READONLY_SETTING) \
     M(473, DEADLOCK_AVOIDED) \
@@ -453,7 +452,7 @@
     M(553, LZMA_STREAM_ENCODER_FAILED) \
     M(554, LZMA_STREAM_DECODER_FAILED) \
     M(555, ROCKSDB_ERROR) \
-    M(556, SYNC_MYSQL_USER_ACCESS_ERROR)\
+    M(556, SYNC_MYSQL_USER_ACCESS_ERROR) \
     M(557, UNKNOWN_UNION) \
     M(558, EXPECTED_ALL_OR_DISTINCT) \
     M(559, INVALID_GRPC_QUERY_INFO) \
@@ -549,9 +548,6 @@
     M(653, CANNOT_PARSE_BACKUP_SETTINGS) \
     M(654, WRONG_BACKUP_SETTINGS) \
     M(655, FAILED_TO_SYNC_BACKUP_OR_RESTORE) \
-    M(656, MEILISEARCH_EXCEPTION) \
-    M(657, UNSUPPORTED_MEILISEARCH_TYPE) \
-    M(658, MEILISEARCH_MISSING_SOME_COLUMNS) \
     M(659, UNKNOWN_STATUS_OF_TRANSACTION) \
     M(660, HDFS_ERROR) \
     M(661, CANNOT_SEND_SIGNAL) \
@@ -582,12 +578,62 @@
     M(697, CANNOT_RESTORE_TO_NONENCRYPTED_DISK) \
     M(698, INVALID_REDIS_STORAGE_TYPE) \
     M(699, INVALID_REDIS_TABLE_STRUCTURE) \
-    \
+    M(700, USER_SESSION_LIMIT_EXCEEDED) \
+    M(701, CLUSTER_DOESNT_EXIST) \
+    M(702, CLIENT_INFO_DOES_NOT_MATCH) \
+    M(703, INVALID_IDENTIFIER) \
+    M(704, QUERY_CACHE_USED_WITH_NONDETERMINISTIC_FUNCTIONS) \
+    M(705, TABLE_NOT_EMPTY) \
+    M(706, LIBSSH_ERROR) \
+    M(707, GCP_ERROR) \
+    M(708, ILLEGAL_STATISTICS) \
+    M(709, CANNOT_GET_REPLICATED_DATABASE_SNAPSHOT) \
+    M(710, FAULT_INJECTED) \
+    M(711, FILECACHE_ACCESS_DENIED) \
+    M(712, TOO_MANY_MATERIALIZED_VIEWS) \
+    M(713, BROKEN_PROJECTION) \
+    M(714, UNEXPECTED_CLUSTER) \
+    M(715, CANNOT_DETECT_FORMAT) \
+    M(716, CANNOT_FORGET_PARTITION) \
+    M(717, EXPERIMENTAL_FEATURE_ERROR) \
+    M(718, TOO_SLOW_PARSING) \
+    M(719, QUERY_CACHE_USED_WITH_SYSTEM_TABLE) \
+    M(720, USER_EXPIRED) \
+    M(721, DEPRECATED_FUNCTION) \
+    M(722, ASYNC_LOAD_WAIT_FAILED) \
+    M(723, PARQUET_EXCEPTION) \
+    M(724, TOO_MANY_TABLES) \
+    M(725, TOO_MANY_DATABASES) \
+    M(726, UNEXPECTED_HTTP_HEADERS) \
+    M(727, UNEXPECTED_TABLE_ENGINE) \
+    M(728, UNEXPECTED_DATA_TYPE) \
+    M(729, ILLEGAL_TIME_SERIES_TAGS) \
+    M(730, REFRESH_FAILED) \
+    M(731, QUERY_CACHE_USED_WITH_NON_THROW_OVERFLOW_MODE) \
+    M(733, TABLE_IS_BEING_RESTARTED) \
+    M(734, CANNOT_WRITE_AFTER_BUFFER_CANCELED) \
+    M(735, QUERY_WAS_CANCELLED_BY_CLIENT) \
+    M(736, ICEBERG_CATALOG_ERROR) \
+    M(737, GOOGLE_CLOUD_ERROR) \
+    M(738, PART_IS_LOCKED) \
+    M(739, BUZZHOUSE) \
+\
+    M(900, DISTRIBUTED_CACHE_ERROR) \
+    M(901, CANNOT_USE_DISTRIBUTED_CACHE) \
+    M(902, PROTOCOL_VERSION_MISMATCH) \
+\
     M(999, KEEPER_EXCEPTION) \
     M(1000, POCO_EXCEPTION) \
     M(1001, STD_EXCEPTION) \
     M(1002, UNKNOWN_EXCEPTION) \
+    M(1003, SSH_EXCEPTION) \
 /* See END */
+
+#ifdef APPLY_FOR_EXTERNAL_ERROR_CODES
+    #define APPLY_FOR_ERROR_CODES(M) APPLY_FOR_BUILTIN_ERROR_CODES(M) APPLY_FOR_EXTERNAL_ERROR_CODES(M)
+#else
+    #define APPLY_FOR_ERROR_CODES(M) APPLY_FOR_BUILTIN_ERROR_CODES(M)
+#endif
 
 namespace DB
 {
@@ -597,7 +643,7 @@ namespace ErrorCodes
     APPLY_FOR_ERROR_CODES(M)
 #undef M
 
-    constexpr ErrorCode END = 3000;
+    constexpr ErrorCode END = 1003;
     ErrorPairHolder values[END + 1]{};
 
     struct ErrorCodesNames
@@ -609,7 +655,7 @@ namespace ErrorCodes
             APPLY_FOR_ERROR_CODES(M)
 #undef M
         }
-    } error_codes_names;
+    } static error_codes_names;
 
     std::string_view getName(ErrorCode error_code)
     {
@@ -635,7 +681,7 @@ namespace ErrorCodes
 
     ErrorCode end() { return END + 1; }
 
-    void increment(ErrorCode error_code, bool remote, const std::string & message, const FramePointers & trace)
+    size_t increment(ErrorCode error_code, bool remote, const std::string & message, const FramePointers & trace)
     {
         if (error_code < 0 || error_code >= end())
         {
@@ -644,22 +690,46 @@ namespace ErrorCodes
             error_code = end() - 1;
         }
 
-        values[error_code].increment(remote, message, trace);
+        return values[error_code].increment(remote, message, trace);
     }
 
-    void ErrorPairHolder::increment(bool remote, const std::string & message, const FramePointers & trace)
+    void extendedMessage(ErrorCode error_code, bool remote, size_t error_index, const std::string & message)
+    {
+        if (error_code < 0 || error_code >= end())
+        {
+            /// For everything outside the range, use END.
+            /// (end() is the pointer pass the end, while END is the last value that has an element in values array).
+            error_code = end() - 1;
+        }
+
+        values[error_code].extendedMessage(remote, error_index, message);
+    }
+
+    size_t ErrorPairHolder::increment(bool remote, const std::string & message, const FramePointers & trace)
     {
         const auto now = std::chrono::system_clock::now();
 
         std::lock_guard lock(mutex);
-
         auto & error = remote ? value.remote : value.local;
 
-        ++error.count;
+        size_t error_index = error.count++;
         error.message = message;
         error.trace = trace;
         error.error_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+
+        return error_index;
     }
+
+    void ErrorPairHolder::extendedMessage(bool remote, size_t error_index, const std::string & new_message)
+    {
+        std::lock_guard lock(mutex);
+        auto & error = remote ? value.remote : value.local;
+
+        /// This function is supposed to extend the current message.
+        if ((error.count == error_index + 1) && new_message.starts_with(error.message))
+            error.message = new_message;
+    }
+
     ErrorPair ErrorPairHolder::get()
     {
         std::lock_guard lock(mutex);

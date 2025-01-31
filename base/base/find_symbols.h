@@ -33,6 +33,10 @@
   *
   * Allow to search for the last matching character in a string.
   * If no such characters, returns nullptr.
+  *
+  * count_symbols<c1, c2, ...>(begin, end):
+  *
+  * Count the number of symbols of the set in a string.
   */
 
 struct SearchSymbols
@@ -147,7 +151,7 @@ constexpr uint16_t maybe_negate(uint16_t x)
         return ~x;
 }
 
-enum class ReturnMode
+enum class ReturnMode : uint8_t
 {
     End,
     Nullptr,
@@ -330,9 +334,8 @@ inline const char * find_first_symbols_dispatch(const char * begin, const char *
 #if defined(__SSE4_2__)
     if (sizeof...(symbols) >= 5)
         return find_first_symbols_sse42<positive, return_mode, sizeof...(symbols), symbols...>(begin, end);
-    else
 #endif
-        return find_first_symbols_sse2<positive, return_mode, symbols...>(begin, end);
+    return find_first_symbols_sse2<positive, return_mode, symbols...>(begin, end);
 }
 
 template <bool positive, ReturnMode return_mode>
@@ -341,9 +344,8 @@ inline const char * find_first_symbols_dispatch(const std::string_view haystack,
 #if defined(__SSE4_2__)
     if (symbols.str.size() >= 5)
         return find_first_symbols_sse42<positive, return_mode>(haystack.begin(), haystack.end(), symbols);
-    else
 #endif
-        return find_first_symbols_sse2<positive, return_mode>(haystack.begin(), haystack.end(), symbols.str.data(), symbols.str.size());
+    return find_first_symbols_sse2<positive, return_mode>(haystack.begin(), haystack.end(), symbols.str.data(), symbols.str.size());
 }
 
 }
@@ -443,12 +445,21 @@ inline char * find_last_not_symbols_or_null(char * begin, char * end)
     return const_cast<char *>(detail::find_last_symbols_sse2<false, detail::ReturnMode::Nullptr, symbols...>(begin, end));
 }
 
+template <char... symbols>
+inline size_t count_symbols(const char * begin, const char * end)
+{
+    size_t res = 0;
+    for (const auto * ptr = begin; ptr < end; ++ptr)
+        res += detail::is_in<symbols...>(*ptr);
+    return res;
+}
+
 
 /// Slightly resembles boost::split. The drawback of boost::split is that it fires a false positive in clang static analyzer.
 /// See https://github.com/boostorg/algorithm/issues/63
 /// And https://bugs.llvm.org/show_bug.cgi?id=41141
 template <char... symbols, typename To>
-inline void splitInto(To & to, const std::string & what, bool token_compress = false)
+inline To & splitInto(To & to, std::string_view what, bool token_compress = false)
 {
     const char * pos = what.data();
     const char * end = pos + what.size();
@@ -464,4 +475,6 @@ inline void splitInto(To & to, const std::string & what, bool token_compress = f
         else
             pos = delimiter_or_end;
     }
+
+    return to;
 }

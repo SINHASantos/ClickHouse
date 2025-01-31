@@ -63,7 +63,7 @@ TEST_P(DateTime64StringWriteTest, WriteText)
     EXPECT_NO_THROW(writeDateTimeText(param.dt64, param.scale, write_buffer, param.timezone));
     write_buffer.finalize();
 
-    EXPECT_STREQ(param.string.data(), actual_string.data());
+    EXPECT_STREQ(param.string.data(), actual_string.data());  /// NOLINT(bugprone-suspicious-stringview-data-usage)
 }
 
 TEST_P(DateTime64StringParseBestEffortTest, parse)
@@ -182,7 +182,7 @@ INSTANTIATE_TEST_SUITE_P(Basic,
             DateLUT::instance("Europe/Minsk")
         },
         {
-            "When scale is 0, subsecond part (and separtor) is missing from string",
+            "When scale is 0, subsecond part (and separator) is missing from string",
             "2019-09-16 19:20:17",
             1568650817ULL,
             0,
@@ -197,4 +197,3 @@ INSTANTIATE_TEST_SUITE_P(Basic,
         }
     })
 );
-
